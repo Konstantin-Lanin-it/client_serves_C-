@@ -2,58 +2,76 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fstream>
+#include <thread>
+#include <mutex>
 
-class TCPClient {
+std::mutex fileMutex;
+
+class TCPServer {
 private:
-    std::string clientName;
-    std::string serverIP;
     int serverPort;
-    int connectionPeriod;
 
 public:
-    TCPClient(const std::string& name, const std::string& ip, int port, int period)
-        : clientName(name), serverIP(ip), serverPort(port), connectionPeriod(period) {}
+    TCPServer(int port) : serverPort(port) {}
 
     void run() {
+        int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+        if (serverSocket < 0) {
+            std::cerr << "Error creating socket" << std::endl;
+            exit(1);
+        }
+
         struct sockaddr_in serverAddr;
         std::memset(&serverAddr, 0, sizeof(serverAddr));
 
         serverAddr.sin_family = AF_INET;
-        serverAddr.sin_addr.s_addr = inet_addr(serverIP.c_str());
+        serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
         serverAddr.sin_port = htons(serverPort);
 
-        while (true) {
-            int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-            if (clientSocket < 0) {
-                std::cerr << "Error creating socket" << std::endl;
-                exit(1);
-            }
-
-            if (connect(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-                std::cerr << "Error connecting to server" << std::endl;
-                exit(1);
-            }
-
-            std::string message = "[" + getCurrentTime() + "] \"" + clientName + "\"";
-
-            if (send(clientSocket, message.c_str(), message.length(), 0) < 0) {
-                std::cerr << "Error sending message to server" << std::endl;
-            }
-
-            close(clientSocket);
-
-            sleep(connectionPeriod);
+        if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+            std::cerr << "Error binding socket" << std::endl;
+            exit(1);
         }
+
+        if (listen(serverSocket, 10) < 0) {
+            std::cerr << "Error listening" << std::endl;
+            exit(1);
+        }
+
+        while (true) {
+            int clientSocket = accept(serverSocket, nullptr, nullptr);
+            if (clientSocket < 0) {
+                std::cerr << "Error accepting client connection" << std::endl;
+                exit(1);
+            }
+
+            std::thread clientThread([this, clientSocket]() {
+                handleClient(clientSocket);
+            });
+            clientThread.detach();
+        }
+
+        close(serverSocket);
     }
 
 private:
-    std::string getCurrentTime() const {
-        time_t now = time(nullptr);
-        struct tm* timeinfo = localtime(&now);
+    void handleClient(int clientSocket) {
+        char buffer[1024];
+        memset(buffer, 0, sizeof(buffer));
 
-        char buffer[80];
-        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S.000", timeinfo);
+        if (recv(clientSocket, buffer, sizeof(buffer), 0) < 0) {
+            std::cerr << "Error receiving message from client" << std::endl;
+        }
 
-        return std::string(buffer);
+        std::string message = buffer;
+
+        fileMutex.lock();
+        std::ofstream logFile("log.txt", std::ios::out | std::ios::app);
+        logFile << message << std::endl;
+        logFile.close();
+        fileMutex.unlock();
+
+        close(clientSocket);
     }
 };
